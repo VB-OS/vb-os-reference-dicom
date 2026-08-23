@@ -1,0 +1,24 @@
+{
+  "Name": "Accessium Reference PACS",
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+
+  "HttpPort": 8042,
+  "DicomPort": 4242,
+  "DicomAet": "ACCESSIUM",
+
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": true,
+  "RegisteredUsers": {
+    "vbos": "accessium_dev"
+  },
+
+  "DicomWeb": {
+    "Enable": true,
+    "Root": "/dicom-web/",
+    "EnableWado": true,
+    "WadoRoot": "/wado"
+  },
+
+  "StableAge": 10
+}

@@ -1,0 +1,8 @@
+.env
+.bootstrap-state.json
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dcm/
+*.zip

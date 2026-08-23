@@ -1,0 +1,22 @@
+services:
+  accessium-orthanc:
+    image: orthancteam/orthanc:latest
+    container_name: accessium-orthanc
+    restart: unless-stopped
+    ports:
+      - "8042:8042"
+      - "4242:4242"
+    volumes:
+      - ./orthanc.json:/etc/orthanc/orthanc.json:ro
+      - orthanc-storage:/var/lib/orthanc/db
+    networks:
+      - default
+      - vbos
+
+networks:
+  vbos:
+    external: true
+    name: vb-os-cloud-api_default
+
+volumes:
+  orthanc-storage:

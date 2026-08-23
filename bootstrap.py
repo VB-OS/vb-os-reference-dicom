@@ -323,6 +323,120 @@ def provision_connectors(state: dict) -> None:
     state["connector_ids"] = connector_ids
 
 
+CERTIFICATIONS = [
+    (
+        "Accessium Study Admissibility Certification",
+        E1,
+        [
+            {"field": "study_instance_uid", "type": "string"},
+            {"field": "modality", "type": "string"},
+            {"field": "series_count", "type": "integer"},
+            {"field": "instance_count", "type": "integer"},
+            {"field": "accession_number", "type": "string"},
+        ],
+        {
+            "study_instance_uid": PHENIX_UID,
+            "modality": "CT",
+            "series_count": 3,
+            "instance_count": 723,
+            "accession_number": "A10011234814",
+        },
+    ),
+    (
+        "Accessium Release Authorization Certification",
+        E2,
+        [
+            {"field": "report_state", "type": "string"},
+            {"field": "report_accession", "type": "string"},
+            {"field": "order_reference", "type": "string"},
+            {"field": "subject_reference", "type": "string"},
+        ],
+        {
+            "report_state": "final",
+            "report_accession": "A10011234814",
+            "order_reference": "ServiceRequest/accessium-order-phenix",
+            "subject_reference": "Patient/accessium-pt-phenix",
+        },
+    ),
+    (
+        "Accessium Delivery Execution Certification",
+        E3,
+        [
+            {"field": "delivery_state", "type": "string"},
+            {"field": "delivered_instance_count", "type": "integer"},
+            {"field": "authorized_instance_count", "type": "integer"},
+            {"field": "recipient_reference", "type": "string"},
+            {"field": "delivery_accession", "type": "string"},
+        ],
+        {
+            "delivery_state": "completed",
+            "delivered_instance_count": 723,
+            "authorized_instance_count": 723,
+            "recipient_reference": "Practitioner/referring-physician-001",
+            "delivery_accession": "A10011234814",
+        },
+    ),
+]
+
+
+def provision_certifications(state: dict) -> None:
+    """A frozen conformance vector per boundary, executed on every run.
+
+    Requires the `manage_certifications` API key scope; without it version
+    creation is refused and no run is ever produced.
+    """
+    existing = {m["name"]: m for m in rows(
+        api("GET", f"/v1/projects/{PROJECT_ID}/certification-models"))}
+    model_ids = state.get("certification_model_ids", {})
+
+    for name, boundary_ref, definitions, vector in CERTIFICATIONS:
+        model = existing.get(name)
+        if model:
+            model_id = model["id"]
+            print(f"  {name}: exists")
+        else:
+            created = api("POST", f"/v1/projects/{PROJECT_ID}/certification-models",
+                          {"name": name, "description": f"Frozen conformance vector for {boundary_ref}"})
+            if created is None:
+                sys.exit(f"certification model creation failed: {name}")
+            model_id = created["id"]
+            print(f"  {name}: created")
+        model_ids[name] = model_id
+
+        if not rows(api("GET",
+                        f"/v1/projects/{PROJECT_ID}/certification-models/{model_id}/versions")):
+            version = api(
+                "POST",
+                f"/v1/projects/{PROJECT_ID}/certification-models/{model_id}/versions",
+                {
+                    "evidence_definitions": definitions,
+                    "boundary_version_id": state["boundaries"][boundary_ref]["version_id"],
+                    "change_description": "Initial certification model version",
+                },
+            )
+            if version is None:
+                sys.exit(f"certification version failed: {name} — check the "
+                         "manage_certifications API key scope")
+
+        run = api("POST", f"/v1/projects/{PROJECT_ID}/certify",
+                  {"model": name, "environment": "Development", "evidence": vector})
+        if run is None:
+            sys.exit(f"certification run failed: {name}")
+
+        status = run.get("status")
+        for _ in range(15):
+            if status in ("PASSED", "FAILED", "ERROR", "CANCELLED"):
+                break
+            time.sleep(2)
+            poll = api("GET", f"/v1/projects/{PROJECT_ID}/certifications/{run['id']}")
+            status = (poll or {}).get("status", status)
+        print(f"    run {status}")
+        if status != "PASSED":
+            sys.exit(f"certification did not pass: {name} ({status})")
+
+    state["certification_model_ids"] = model_ids
+
+
 def provision_flows(state: dict) -> None:
     """Two flows: E2 ASSERT dispatches the release; E3 records the outcome."""
     boundaries = state["boundaries"]
@@ -481,6 +595,9 @@ def main() -> int:
 
     print("Flows:")
     provision_flows(state)
+
+    print("Certifications:")
+    provision_certifications(state)
 
     save_state(state)
     print(f"\nState written to {STATE_FILE.name}")

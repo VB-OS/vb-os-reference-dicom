@@ -104,12 +104,26 @@ anonymized clinical studies.
 BRAINIX's accession number is `"0"` in the source data. The DEFER comes from the
 data, not from anything edited.
 
+## Certification
+
+One frozen conformance vector per boundary, executed on every bootstrap run and
+required to pass. This needs the **`manage_certifications`** API key scope —
+without it, version creation is refused and no run is ever produced.
+
+| Model | Boundary |
+|-------|----------|
+| Accessium Study Admissibility Certification | E1 |
+| Accessium Release Authorization Certification | E2 |
+| Accessium Delivery Execution Certification | E3 |
+
 ## Prerequisites
 
 1. VB-OS Cloud API running on `localhost:8000`
 2. Docker
 3. Python 3.11+
-4. A VB-OS project, environment and API key (see `.env.example`)
+4. A VB-OS project, environment and API key (see `.env.example`). The key needs
+   `manage_certifications` alongside the boundary, connector, flow and evaluate
+   scopes.
 
 ## Setup
 

@@ -24,10 +24,38 @@ authority — it verifies provenance, not truth.
    │ E1  STUDY ADMISSIBLE   │    │ E2  RELEASE AUTHORIZED     │
    └───────────┬────────────┘    └─────────────┬──────────────┘
       DEFER ◄──┴──► ASSERT          DEFER ◄────┴────► ASSERT
+                                                     │
+                                        governed flow, minimum
+                                        disclosure only
+                                                     ▼
+                                     ┌────────────────────────────┐
+                                     │  Referring physician portal │
+                                     └─────────────┬──────────────┘
+                                       authenticated_provider_push
+                                                   ▼
+                                     ┌────────────────────────────┐
+                                     │ E3  DELIVERY VERIFIED      │
+                                     └─────────────┬──────────────┘
+                                        DEFER ◄────┴────► ASSERT
 ```
 
-E2 (release authorization) is live, sourced from a local HAPI FHIR server. E3
-(delivery execution verification) is drafted in `boundaries/` and not yet built.
+All three stages are live: E1 from a real PACS, E2 from a local HAPI FHIR
+server, and E3 from the receiving portal's own signed delivery receipt.
+
+## Governed dispatch
+
+E2 ASSERT dispatches a signed release to the portal. The flow discloses only
+`report_accession` and `authorized_instance_count` — the portal receives what it
+needs to perform and account for the delivery, and nothing else.
+
+The portal does not treat an inbound ASSERT as authority. It verifies the
+signature and timestamp, enforces delivery idempotency, consumes each
+authorization at most once, then **re-fetches the evaluation from VB-OS** and
+independently checks the decision, the boundary it came from, and its
+acquisition class before releasing anything.
+
+Its outcome returns as a FHIR `Task` signed with the platform's HMAC, which
+arrives as an `authenticated_provider_push` and drives E3.
 
 ## Scenarios
 
@@ -38,6 +66,8 @@ E2 (release authorization) is live, sourced from a local HAPI FHIR server. E3
 | 3 | Finalised report | E2 | ASSERT | — |
 | 4 | Preliminary report | E2 | DEFER | predicate |
 | 5 | Export-restricted report | E2 | DEFER | **prohibition** |
+| 6 | Delivery completed, counts match | E3 | ASSERT | — |
+| 7 | Portal accepted 700 of 723 authorized | E3 | DEFER | predicate (execution drift) |
 
 Scenario 5 is the distinct one: evidence of a prohibited condition exists, so
 the engine stops before evaluating predicates at all. All five replay
@@ -94,9 +124,15 @@ python seed_fhir.py
 # 3. Configure
 cp .env.example .env      # fill in VBOS_API_KEY, VBOS_PROJECT_ID, VBOS_ENVIRONMENT_ID
 
-# 4. Provision the boundary and connector in VB-OS Cloud (idempotent)
+# 4. Provision boundaries, connectors and flows in VB-OS Cloud (idempotent)
 python bootstrap.py
+
+# 5. Start the referring physician portal (reads .env)
+python delivery_gateway.py
 ```
+
+Set `DELIVERY_DRIFT=23` to make the portal accept fewer instances than were
+authorized, which is what E3 exists to catch.
 
 Orthanc is at `http://localhost:8042` (user `vbos`) and HAPI FHIR at
 `http://localhost:8090/fhir`. From the platform's containers they are
@@ -131,7 +167,8 @@ accessium-dicom/
 ├── orthanc.json         # PACS config: basic auth, DICOMweb
 ├── seed_studies.py      # loads the anonymized studies
 ├── seed_fhir.py         # loads the order and report resources
-├── bootstrap.py         # idempotent VB-OS provisioning (boundary + scoped connectors)
+├── bootstrap.py         # idempotent VB-OS provisioning (boundaries, connectors, flows)
+├── delivery_gateway.py  # referring physician portal — the governed downstream
 ├── boundaries/          # DSL source of truth
 ├── tests/
 └── manifest.json

@@ -36,6 +36,15 @@ STATE_FILE = ROOT / ".bootstrap-state.json"
 
 E1 = "B_ACCESSIUM_STUDY_ADMISSIBILITY"
 E2 = "B_ACCESSIUM_RELEASE_AUTHORIZATION"
+E3 = "B_ACCESSIUM_DELIVERY_EXECUTION"
+
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://host.docker.internal:9092")
+WEBHOOK_SIGNING_SECRET = os.environ.get(
+    "WEBHOOK_SIGNING_SECRET", "accessium_webhook_secret_dev"
+)
+INGEST_SIGNING_SECRET = os.environ.get(
+    "INGEST_SIGNING_SECRET", "accessium_ingest_secret_dev"
+)
 
 BOUNDARIES = [
     (
@@ -49,6 +58,12 @@ BOUNDARIES = [
         "Accessium Release Authorization",
         "E2 — is the report authorising this release finalised, tied to the study's "
         "accession, linked to an order, and free of an export restriction?",
+    ),
+    (
+        E3,
+        "Accessium Delivery Execution",
+        "E3 — did the receiving portal complete the delivery, to the named "
+        "recipient, of exactly what was authorized?",
     ),
 ]
 
@@ -65,6 +80,23 @@ DICOM_MAPPINGS = [
     {"evidence_field": "series_count", "source_path": "00201206.Value.0", "transform": "to_integer"},
     {"evidence_field": "instance_count", "source_path": "00201208.Value.0", "transform": "to_integer"},
     {"evidence_field": "accession_number", "source_path": "00080050.Value.0"},
+]
+
+# The portal reports its outcome as a FHIR Task pushed back to the platform.
+RECEIPT_MAPPINGS = [
+    {"evidence_field": "delivery_state", "source_path": "status"},
+    {"evidence_field": "delivery_accession", "source_path": "identifier.0.value"},
+    {"evidence_field": "recipient_reference", "source_path": "owner.reference"},
+    {
+        "evidence_field": "delivered_instance_count",
+        "source_path": "output.0.valueInteger",
+        "transform": "to_integer",
+    },
+    {
+        "evidence_field": "authorized_instance_count",
+        "source_path": "output.1.valueInteger",
+        "transform": "to_integer",
+    },
 ]
 
 FHIR_MAPPINGS = [
@@ -112,12 +144,27 @@ def _fhir(name: str, report_id: str) -> dict:
     }
 
 
+# Ingest only. The receipt is a FHIR Task authored by the portal and pushed to
+# the platform, so the acquisition is an authenticated provider push rather than
+# anything the platform went and fetched.
+RECEIPT_CONNECTOR = {
+    "name": "accessium-portal-receipt",
+    "provider": "hl7_fhir",
+    "boundary_ref": E3,
+    "config": {"base_url": FHIR_BASE_URL, "resource_type": "Task"},
+    "credentials": {"access_token": ""},
+    "evidence_mappings": RECEIPT_MAPPINGS,
+    "webhook_secret": INGEST_SIGNING_SECRET,
+    "allowed_acquisition_classes": ["authenticated_provider_push"],
+}
+
 CONNECTORS = [
     _dicom("accessium-pacs", PHENIX_UID),
     _dicom("accessium-pacs-unaccessioned", BRAINIX_UID),
     _fhir("accessium-ris-report", "accessium-report-phenix"),
     _fhir("accessium-ris-report-preliminary", "accessium-report-preliminary"),
     _fhir("accessium-ris-report-restricted", "accessium-report-restricted"),
+    RECEIPT_CONNECTOR,
 ]
 
 
@@ -145,6 +192,13 @@ def api(method: str, path: str, body: dict | None = None, attempts: int = 4):
             print(f"  HTTP {e.code} {method} {path}: {e.read().decode()[:300]}")
             return None
     return None
+
+
+def rows(response: dict | None) -> list:
+    """List endpoints return `data` or `items` depending on the resource."""
+    if not response:
+        return []
+    return response.get("data") or response.get("items") or []
 
 
 def load_state() -> dict:
@@ -241,14 +295,19 @@ def provision_connectors(state: dict) -> None:
             else:
                 print(f"  {name}: exists")
         else:
-            created = api("POST", f"/v1/projects/{PROJECT_ID}/connectors", {
+            body = {
                 "name": name,
                 "provider": spec["provider"],
                 "config": config,
                 "credentials": spec["credentials"],
-                "allowed_acquisition_classes": ["active_provider"],
+                "allowed_acquisition_classes": spec.get(
+                    "allowed_acquisition_classes", ["active_provider"]
+                ),
                 "evidence_mappings": spec["evidence_mappings"],
-            })
+            }
+            if spec.get("webhook_secret"):
+                body["webhook_secret"] = spec["webhook_secret"]
+            created = api("POST", f"/v1/projects/{PROJECT_ID}/connectors", body)
             if created is None:
                 sys.exit(f"connector creation failed: {name}")
             connector_id = created["id"]
@@ -264,6 +323,150 @@ def provision_connectors(state: dict) -> None:
     state["connector_ids"] = connector_ids
 
 
+def provision_flows(state: dict) -> None:
+    """Two flows: E2 ASSERT dispatches the release; E3 records the outcome."""
+    boundaries = state["boundaries"]
+    connector_ids = state["connector_ids"]
+
+    live = {
+        "schema_version": 1,
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "trigger",
+                "config": {"connector_id": connector_ids["accessium-ris-report"]},
+            },
+            {
+                "id": "boundary-1",
+                "type": "boundary",
+                "config": {
+                    "boundary_ref": E2,
+                    "boundary_version_id": boundaries[E2]["version_id"],
+                },
+            },
+            {
+                "id": "release-wh",
+                "type": "assert_action",
+                "config": {
+                    "action_type": "webhook",
+                    "url": f"{GATEWAY_URL}/release-study",
+                    "signing_secret": WEBHOOK_SIGNING_SECRET,
+                    "max_attempts": 3,
+                    "backoff_seconds": 5,
+                    # Minimum disclosure: the portal receives only what it needs
+                    # to perform and account for the delivery.
+                    "evidence_disclosure_projection": [
+                        "report_accession",
+                        "authorized_instance_count",
+                    ],
+                },
+            },
+            {
+                "id": "release-log",
+                "type": "assert_action",
+                "config": {"action_type": "log", "message": "Study release authorized"},
+            },
+            {
+                "id": "review-ntf",
+                "type": "defer_action",
+                "config": {
+                    "action_type": "notification",
+                    "title": "Manual release review required",
+                },
+            },
+        ],
+        "edges": [
+            {"id": "e1", "source": "trigger-1", "target": "boundary-1"},
+            {"id": "e2", "source": "boundary-1", "target": "release-wh", "label": "assert"},
+            {"id": "e3", "source": "boundary-1", "target": "release-log", "label": "assert"},
+            {"id": "e4", "source": "boundary-1", "target": "review-ntf", "label": "defer"},
+        ],
+    }
+
+    execution = {
+        "schema_version": 1,
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "trigger",
+                "config": {"connector_id": connector_ids["accessium-portal-receipt"]},
+            },
+            {
+                "id": "boundary-1",
+                "type": "boundary",
+                "config": {
+                    "boundary_ref": E3,
+                    "boundary_version_id": boundaries[E3]["version_id"],
+                },
+            },
+            {
+                "id": "verified-log",
+                "type": "assert_action",
+                "config": {"action_type": "log", "message": "Delivery execution verified"},
+            },
+            {
+                "id": "anomaly-ntf",
+                "type": "defer_action",
+                "config": {
+                    "action_type": "notification",
+                    "title": "Delivery execution anomaly",
+                },
+            },
+        ],
+        "edges": [
+            {"id": "e1", "source": "trigger-1", "target": "boundary-1"},
+            {"id": "e2", "source": "boundary-1", "target": "verified-log", "label": "assert"},
+            {"id": "e3", "source": "boundary-1", "target": "anomaly-ntf", "label": "defer"},
+        ],
+    }
+
+    flows = [
+        ("Accessium Release Authorization Dispatch",
+         "Fires on E2. ASSERT dispatches a signed release to the referring portal.",
+         live),
+        ("Accessium Delivery Execution Result",
+         "Fires on E3 from the portal receipt. ASSERT = verified, DEFER = anomaly.",
+         execution),
+    ]
+
+    by_name = {f["name"]: f for f in rows(api("GET", f"/v1/projects/{PROJECT_ID}/flows"))}
+    flow_ids = state.get("flow_ids", {})
+
+    for name, description, definition in flows:
+        existing = by_name.get(name)
+        if existing:
+            flow_id = existing["id"]
+            print(f"  {name}: exists")
+        else:
+            created = api("POST", f"/v1/projects/{PROJECT_ID}/flows",
+                          {"name": name, "description": description})
+            if created is None:
+                sys.exit(f"flow creation failed: {name}")
+            flow_id = created["id"]
+            print(f"  {name}: created")
+
+        if rows(api("GET", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions")):
+            flow_ids[name] = flow_id
+            continue
+
+        version = api("POST", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions",
+                      {"definition": definition})
+        if version is None:
+            sys.exit(f"flow version failed: {name}")
+        vid = version["id"]
+        api("POST", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions/{vid}/approve", {})
+        # A flow is created DRAFT and cannot deploy a version until activated.
+        api("PATCH", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}", {"status": "ACTIVE"})
+        deployed = api("POST", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions/{vid}/deploy",
+                       {"environment_id": ENV_ID})
+        if deployed is None:
+            sys.exit(f"flow deploy failed: {name}")
+        print(f"  {name}: deployed")
+        flow_ids[name] = flow_id
+
+    state["flow_ids"] = flow_ids
+
+
 def main() -> int:
     state = load_state()
     state["project_id"] = PROJECT_ID
@@ -275,6 +478,9 @@ def main() -> int:
 
     print("Connectors:")
     provision_connectors(state)
+
+    print("Flows:")
+    provision_flows(state)
 
     save_state(state)
     print(f"\nState written to {STATE_FILE.name}")

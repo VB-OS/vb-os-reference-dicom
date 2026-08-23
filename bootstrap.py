@@ -31,7 +31,21 @@ STATE_FILE = ROOT / ".bootstrap-state.json"
 BOUNDARY_REF = "B_ACCESSIUM_STUDY_ADMISSIBILITY"
 BOUNDARY_DSL = (ROOT / "boundaries" / f"{BOUNDARY_REF}.dsl").read_text()
 
-CONNECTOR_NAME = "accessium-pacs"
+PHENIX_UID = os.environ.get(
+    "ACCESSIUM_PHENIX_UID", "2.16.840.1.113669.632.20.1211.10000098591"
+)
+BRAINIX_UID = os.environ.get(
+    "ACCESSIUM_BRAINIX_UID", "2.16.840.1.113669.632.20.1211.10000357775"
+)
+
+# One connector per governed study. A scoped DICOM acquisition must resolve to
+# exactly one study, so the evaluation subject is what was requested rather than
+# whatever the archive happened to return first.
+CONNECTORS = [
+    ("accessium-pacs", PHENIX_UID),
+    ("accessium-pacs-unaccessioned", BRAINIX_UID),
+]
+
 EVIDENCE_MAPPINGS = [
     {"evidence_field": "study_instance_uid", "source_path": "0020000D.Value.0"},
     {"evidence_field": "modality", "source_path": "00080061.Value.0"},
@@ -90,8 +104,13 @@ def provision_boundary(state: dict) -> None:
 
     versions = api("GET", f"/v1/projects/{PROJECT_ID}/boundaries/{boundary_id}/versions")
     latest = versions["data"][0]
+    # The version list omits dsl_source; fetch the detail to compare against source.
+    detail = api(
+        "GET",
+        f"/v1/projects/{PROJECT_ID}/boundaries/{boundary_id}/versions/{latest['id']}",
+    ) or {}
 
-    if latest["dsl_source"].strip() != BOUNDARY_DSL.strip():
+    if detail.get("dsl_source", "").strip() != BOUNDARY_DSL.strip():
         latest = api("POST", f"/v1/projects/{PROJECT_ID}/boundaries/{boundary_id}/versions", {
             "dsl_source": BOUNDARY_DSL,
             "change_description": "Sync from boundaries/ source of truth",
@@ -127,35 +146,45 @@ def provision_boundary(state: dict) -> None:
     state["boundary"] = {"boundary_id": boundary_id, "version_id": version_id}
 
 
-def provision_connector(state: dict) -> None:
+def provision_connectors(state: dict) -> None:
     listing = api("GET", f"/v1/projects/{PROJECT_ID}/connectors") or {}
-    existing = next((c for c in listing.get("data", []) if c["name"] == CONNECTOR_NAME), None)
+    by_name = {c["name"]: c for c in listing.get("data", [])}
+    connector_ids = state.get("connector_ids", {})
 
-    if existing:
-        connector_id = existing["id"]
-        print(f"  {CONNECTOR_NAME}: exists")
-    else:
-        created = api("POST", f"/v1/projects/{PROJECT_ID}/connectors", {
-            "name": CONNECTOR_NAME,
-            "provider": "dicom",
-            "config": {"base_url": ORTHANC_BASE_URL},
-            "credentials": {"username": ORTHANC_USER, "password": ORTHANC_PASSWORD},
-            "allowed_acquisition_classes": ["active_provider"],
-            "evidence_mappings": EVIDENCE_MAPPINGS,
+    for name, study_uid in CONNECTORS:
+        config = {"base_url": ORTHANC_BASE_URL, "study_instance_uid": study_uid}
+        existing = by_name.get(name)
+
+        if existing:
+            connector_id = existing["id"]
+            if existing.get("config") != config:
+                api("PATCH", f"/v1/projects/{PROJECT_ID}/connectors/{connector_id}",
+                    {"config": config})
+                print(f"  {name}: scope updated")
+            else:
+                print(f"  {name}: exists")
+        else:
+            created = api("POST", f"/v1/projects/{PROJECT_ID}/connectors", {
+                "name": name,
+                "provider": "dicom",
+                "config": config,
+                "credentials": {"username": ORTHANC_USER, "password": ORTHANC_PASSWORD},
+                "allowed_acquisition_classes": ["active_provider"],
+                "evidence_mappings": EVIDENCE_MAPPINGS,
+            })
+            if created is None:
+                sys.exit(f"connector creation failed: {name}")
+            connector_id = created["id"]
+            print(f"  {name}: created, scoped to ...{study_uid[-6:]}")
+
+        api("PUT", f"/v1/projects/{PROJECT_ID}/connectors/{connector_id}/schedule", {
+            "auto_evaluate_enabled": True,
+            "target_boundary_ref": BOUNDARY_REF,
+            "target_environment_id": ENV_ID,
         })
-        if created is None:
-            sys.exit("connector creation failed")
-        connector_id = created["id"]
-        print(f"  {CONNECTOR_NAME}: created")
+        connector_ids[name] = connector_id
 
-    api("PUT", f"/v1/projects/{PROJECT_ID}/connectors/{connector_id}/schedule", {
-        "auto_evaluate_enabled": True,
-        "target_boundary_ref": BOUNDARY_REF,
-        "target_environment_id": ENV_ID,
-    })
-    print(f"  {CONNECTOR_NAME}: auto-evaluate -> {BOUNDARY_REF}")
-
-    state["connector_id"] = connector_id
+    state["connector_ids"] = connector_ids
 
 
 def main() -> int:
@@ -166,7 +195,7 @@ def main() -> int:
     print("Boundaries:")
     provision_boundary(state)
     print("Connectors:")
-    provision_connector(state)
+    provision_connectors(state)
 
     save_state(state)
     print(f"\nState written to {STATE_FILE.name}")

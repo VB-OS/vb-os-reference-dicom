@@ -85,13 +85,18 @@ python bootstrap.py
 Orthanc is reachable at `http://localhost:8042` (user `vbos`) and, from the
 platform's containers, at `http://accessium-orthanc:8042/dicom-web`.
 
-## Known platform constraint
+## Per-study scoping
 
-The DICOM connector cannot currently scope its acquisition to one study: the
-gather API never passes the connector's `StudyInstanceUID` filter, so every
-gather queries all studies and the evidence collapses to whichever event is
-applied last. Until that is addressed, keep one study per PACS instance or
-expect the evidence to reflect an arbitrary study.
+Each connector is pinned to one study via `study_instance_uid` in its config, so
+the evaluated subject is what was requested rather than whatever the archive
+returned first. A scoped acquisition must resolve to exactly one study — zero or
+several are rejected with no evidence and no evaluation, and the rejection is
+recorded in the audit trail.
+
+| Connector | Scoped to | E1 |
+|-----------|-----------|-----|
+| `accessium-pacs` | PHENIX | ASSERT |
+| `accessium-pacs-unaccessioned` | BRAINIX | DEFER |
 
 ## Directory structure
 
@@ -100,7 +105,7 @@ accessium-dicom/
 ├── docker-compose.yml   # Orthanc, joined to the VB-OS Cloud network
 ├── orthanc.json         # PACS config: basic auth, DICOMweb
 ├── seed_studies.py      # loads the anonymized studies
-├── bootstrap.py         # idempotent VB-OS provisioning
+├── bootstrap.py         # idempotent VB-OS provisioning (boundary + scoped connectors)
 ├── boundaries/          # DSL source of truth
 ├── tests/
 └── manifest.json

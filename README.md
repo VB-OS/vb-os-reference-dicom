@@ -14,19 +14,34 @@ authority — it verifies provenance, not truth.
 ## Architecture
 
 ```
-        ┌──────────────┐
-        │   Orthanc    │   real DICOM/PACS, DICOMweb
-        └──────┬───────┘
-               │ active_provider
-               ▼
-   ┌────────────────────────┐
-   │ E1  STUDY ADMISSIBLE   │
-   └───────────┬────────────┘
-      DEFER ◄──┴──► ASSERT
+        ┌──────────────┐              ┌──────────────┐
+        │   Orthanc    │              │  HAPI FHIR   │
+        │ DICOM / PACS │              │  RIS / order │
+        └──────┬───────┘              └──────┬───────┘
+               │ active_provider              │ active_provider
+               ▼                              ▼
+   ┌────────────────────────┐    ┌────────────────────────────┐
+   │ E1  STUDY ADMISSIBLE   │    │ E2  RELEASE AUTHORIZED     │
+   └───────────┬────────────┘    └─────────────┬──────────────┘
+      DEFER ◄──┴──► ASSERT          DEFER ◄────┴────► ASSERT
 ```
 
-E2 (release authorization, FHIR-sourced) and E3 (delivery execution
-verification) are drafted in `boundaries/` and not yet built.
+E2 (release authorization) is live, sourced from a local HAPI FHIR server. E3
+(delivery execution verification) is drafted in `boundaries/` and not yet built.
+
+## Scenarios
+
+| # | Scenario | Stage | Result | Failure class |
+|---|----------|-------|--------|---------------|
+| 1 | Complete accessioned CT | E1 | ASSERT | — |
+| 2 | Study with no accession number | E1 | DEFER | predicate |
+| 3 | Finalised report | E2 | ASSERT | — |
+| 4 | Preliminary report | E2 | DEFER | predicate |
+| 5 | Export-restricted report | E2 | DEFER | **prohibition** |
+
+Scenario 5 is the distinct one: evidence of a prohibited condition exists, so
+the engine stops before evaluating predicates at all. All five replay
+deterministically.
 
 ## Boundary — E1
 
@@ -72,8 +87,9 @@ data, not from anything edited.
 # 1. Start the reference PACS (joins the VB-OS Cloud Docker network)
 docker compose up -d
 
-# 2. Load the anonymized studies
+# 2. Load the anonymized studies and the RIS resources
 python seed_studies.py
+python seed_fhir.py
 
 # 3. Configure
 cp .env.example .env      # fill in VBOS_API_KEY, VBOS_PROJECT_ID, VBOS_ENVIRONMENT_ID
@@ -82,8 +98,9 @@ cp .env.example .env      # fill in VBOS_API_KEY, VBOS_PROJECT_ID, VBOS_ENVIRONM
 python bootstrap.py
 ```
 
-Orthanc is reachable at `http://localhost:8042` (user `vbos`) and, from the
-platform's containers, at `http://accessium-orthanc:8042/dicom-web`.
+Orthanc is at `http://localhost:8042` (user `vbos`) and HAPI FHIR at
+`http://localhost:8090/fhir`. From the platform's containers they are
+`http://accessium-orthanc:8042/dicom-web` and `http://accessium-fhir:8080/fhir`.
 
 ## Per-study scoping
 
@@ -93,10 +110,18 @@ returned first. A scoped acquisition must resolve to exactly one study — zero 
 several are rejected with no evidence and no evaluation, and the rejection is
 recorded in the audit trail.
 
-| Connector | Scoped to | E1 |
-|-----------|-----------|-----|
-| `accessium-pacs` | PHENIX | ASSERT |
-| `accessium-pacs-unaccessioned` | BRAINIX | DEFER |
+| Connector | Scoped to | Stage | Decision |
+|-----------|-----------|-------|----------|
+| `accessium-pacs` | PHENIX study | E1 | ASSERT |
+| `accessium-pacs-unaccessioned` | BRAINIX study | E1 | DEFER |
+| `accessium-ris-report` | final report | E2 | ASSERT |
+| `accessium-ris-report-preliminary` | preliminary report | E2 | DEFER |
+| `accessium-ris-report-restricted` | restricted report | E2 | DEFER (prohibition) |
+
+A FHIR connector is scoped by direct read — `resource_type` holds a relative
+resource reference such as `DiagnosticReport/accessium-report-phenix`, which
+returns exactly one resource. A bare resource type returns a Bundle whose first
+entry is decided by server ordering.
 
 ## Directory structure
 
@@ -105,6 +130,7 @@ accessium-dicom/
 ├── docker-compose.yml   # Orthanc, joined to the VB-OS Cloud network
 ├── orthanc.json         # PACS config: basic auth, DICOMweb
 ├── seed_studies.py      # loads the anonymized studies
+├── seed_fhir.py         # loads the order and report resources
 ├── bootstrap.py         # idempotent VB-OS provisioning (boundary + scoped connectors)
 ├── boundaries/          # DSL source of truth
 ├── tests/

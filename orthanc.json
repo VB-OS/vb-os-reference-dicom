@@ -1,16 +1,16 @@
 {
-  "Name": "Accessium Reference PACS",
+  "Name": "Imaging Reference PACS",
   "StorageDirectory": "/var/lib/orthanc/db",
   "IndexDirectory": "/var/lib/orthanc/db",
 
   "HttpPort": 8042,
   "DicomPort": 4242,
-  "DicomAet": "ACCESSIUM",
+  "DicomAet": "IMAGING",
 
   "RemoteAccessAllowed": true,
   "AuthenticationEnabled": true,
   "RegisteredUsers": {
-    "vbos": "accessium_dev"
+    "vbos": "imaging_dev"
   },
 
   "DicomWeb": {

@@ -1,8 +1,21 @@
 .env
 .bootstrap-state.json
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
 dcm/
 *.zip
+.gateway.db
+.gateway-drift.log
+.gateway.log
+
+# Obsolete — kept on disk for reference but not part of the integration
+delivery_gateway.py
+manifest.json
+ai-bridge/
+
+# Not part of the reference integration
+seed_template.py
+seed_template_registry.py

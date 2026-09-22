@@ -1,6 +1,8 @@
-boundary_id: B_ACCESSIUM_DELIVERY_EXECUTION
+# Copyright 2026 MNC Labs, Inc. Licensed under Apache 2.0.
+
+boundary_id: B_IMAGING_DELIVERY_EXECUTION
 version: 1
-scope: "accessium/imaging-release"
+scope: "imaging/release"
 eta_cap: 300
 
 define_set completed_task_states: ("completed")

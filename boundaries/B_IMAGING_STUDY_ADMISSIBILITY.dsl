@@ -1,6 +1,8 @@
-boundary_id: B_ACCESSIUM_STUDY_ADMISSIBILITY
+# Copyright 2026 MNC Labs, Inc. Licensed under Apache 2.0.
+
+boundary_id: B_IMAGING_STUDY_ADMISSIBILITY
 version: 1
-scope: "accessium/imaging-release"
+scope: "imaging/release"
 eta_cap: 3600
 
 define_set released_modalities: ("CT", "MR", "CR", "DX")

@@ -1,3 +1,18 @@
+# Copyright 2026 MNC Labs, Inc.
+# Author: Asaad Riaz
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Load real anonymized DICOM studies into the reference PACS.
 
 Studies come from the Orthanc project's public demo archive. They are genuine
@@ -18,7 +33,7 @@ import zipfile
 DEMO_BASE = "https://orthanc.uclouvain.be/demo"
 ORTHANC_URL = os.environ.get("ORTHANC_URL", "http://localhost:8042")
 ORTHANC_USER = os.environ.get("ORTHANC_USER", "vbos")
-ORTHANC_PASSWORD = os.environ.get("ORTHANC_PASSWORD", "accessium_dev")
+ORTHANC_PASSWORD = os.environ.get("ORTHANC_PASSWORD", "imaging_dev")
 
 STUDIES = {
     "phenix": {

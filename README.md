@@ -1,15 +1,19 @@
-# Accessium DICOM Reference Environment
+# VB-OS DICOM Reference Integration
 
-A vendor-neutral reference workflow demonstrating governed release of radiology
-studies through VB-OS Cloud. It does **not** represent any organisation's
-production topology.
+A reference implementation demonstrating governed release of radiology studies
+through [VB-OS Cloud](https://vb-os.org). This integration exercises all four
+governance boundaries — study admissibility (E1), AI draft authority (E2-AI),
+release authorization (E2), and delivery execution verification (E3) — against
+real source systems.
 
-**Governed decision:** release a completed radiology study to an external
-referring physician portal.
+VB-OS holds no clinical or diagnostic authority. It verifies provenance, not
+truth: was this action authorized, on what evidence, acquired from where, and
+can it be proven six months from now.
 
-**Framing:** was this release authorized, on what evidence, acquired from where,
-and can it be proven six months from now. VB-OS holds no clinical or diagnostic
-authority — it verifies provenance, not truth.
+## Quick Start
+
+See [SETUP.md](SETUP.md) for complete setup instructions — from forking the
+template in VB-OS Cloud to running the full integration locally.
 
 ## Architecture
 
@@ -18,78 +22,93 @@ authority — it verifies provenance, not truth.
         │   Orthanc    │              │  HAPI FHIR   │
         │ DICOM / PACS │              │  RIS / order │
         └──────┬───────┘              └──────┬───────┘
-               │ active_provider              │ active_provider
+               │ caller_supplied_payload      │ caller_supplied_payload
                ▼                              ▼
    ┌────────────────────────┐    ┌────────────────────────────┐
    │ E1  STUDY ADMISSIBLE   │    │ E2  RELEASE AUTHORIZED     │
    └───────────┬────────────┘    └─────────────┬──────────────┘
       DEFER ◄──┴──► ASSERT          DEFER ◄────┴────► ASSERT
-                                                     │
-                                        governed flow, minimum
-                                        disclosure only
-                                                     ▼
-                                     ┌────────────────────────────┐
-                                     │  Referring physician portal │
-                                     └─────────────┬──────────────┘
-                                       authenticated_provider_push
-                                                   ▼
-                                     ┌────────────────────────────┐
-                                     │ E3  DELIVERY VERIFIED      │
-                                     └─────────────┬──────────────┘
-                                        DEFER ◄────┴────► ASSERT
+                    │                                  │
+                    ▼                                  ▼
+         ┌──────────────────┐           ┌──────────────────────────┐
+         │ VB-OS OpenAI     │           │ E3  DELIVERY VERIFIED    │
+         │ (active_provider)│           └─────────────┬────────────┘
+         └────────┬─────────┘              DEFER ◄────┴────► ASSERT
+                  ▼
+   ┌──────────────────────────────┐
+   │ E2-AI  AI DRAFT AUTHORITY    │
+   └──────────────┬───────────────┘
+      DEFER ◄─────┴─────► ASSERT
 ```
 
-All three stages are live: E1 from a real PACS, E2 from a local HAPI FHIR
-server, and E3 from the receiving portal's own signed delivery receipt.
+## Acquisition Modes
 
-## Governed dispatch
+This integration demonstrates both acquisition modes supported by VB-OS:
 
-E2 ASSERT dispatches a signed release to the portal. The flow discloses only
-`report_accession` and `authorized_instance_count` — the portal receives what it
-needs to perform and account for the delivery, and nothing else.
+**Caller-supplied payload** (E1, E2, E3): The local script reads from the
+source system (Orthanc or HAPI FHIR), then pushes the raw payload to VB-OS
+Cloud. VB-OS extracts evidence, evaluates the boundary, and records the
+provenance.
 
-The portal does not treat an inbound ASSERT as authority. It verifies the
-signature and timestamp, enforces delivery idempotency, consumes each
-authorization at most once, then **re-fetches the evaluation from VB-OS** and
-independently checks the decision, the boundary it came from, and its
-acquisition class before releasing anything.
-
-Its outcome returns as a FHIR `Task` signed with the platform's HMAC, which
-arrives as an `authenticated_provider_push` and drives E3.
+**Active provider** (E2-AI): VB-OS Cloud calls OpenAI server-side using the
+credentials configured on the connector. The local script sends context
+evidence; VB-OS makes the API call, parses the response, extracts structured
+evidence, and evaluates the boundary.
 
 ## Scenarios
 
-| # | Scenario | Stage | Result | Failure class |
-|---|----------|-------|--------|---------------|
-| 1 | Complete accessioned CT | E1 | ASSERT | — |
-| 2 | Study with no accession number | E1 | DEFER | predicate |
-| 3 | Finalised report | E2 | ASSERT | — |
-| 4 | Preliminary report | E2 | DEFER | predicate |
-| 5 | Export-restricted report | E2 | DEFER | **prohibition** |
-| 6 | Delivery completed, counts match | E3 | ASSERT | — |
-| 7 | Portal accepted 700 of 723 authorized | E3 | DEFER | predicate (execution drift) |
+| # | Scenario | Stage | Result |
+|---|----------|-------|--------|
+| 1 | Complete accessioned CT study | E1 | ASSERT |
+| 2 | Study with no accession number | E1 | DEFER |
+| 3 | Finalised diagnostic report | E2 | ASSERT |
+| 4 | Preliminary report | E2 | DEFER |
+| 5 | Export-restricted report | E2 | DEFER (prohibition) |
+| 6 | Live AI screening pipeline | E1 → E2-AI | varies |
 
-Scenario 5 is the distinct one: evidence of a prohibited condition exists, so
-the engine stops before evaluating predicates at all. All five replay
-deterministically.
+Run `python3 demo.py --list` for descriptions, or `python3 demo.py --all` to
+run all scenarios. `python3 demo.py --pipeline` runs the full E1 → E2-AI → E2
+→ E3 pipeline end-to-end.
 
-## Boundary — E1
+## Verification Vectors
 
-`B_ACCESSIUM_STUDY_ADMISSIBILITY` governs four conditions, all from a single
-DICOM acquisition:
+`verify.py` contains 9 deterministic test vectors that prove each governance
+condition in the E2-AI boundary evaluates correctly. No live AI call is made.
+
+| Vector | Tests | Expected |
+|--------|-------|----------|
+| V1 | All governance conditions met | ASSERT |
+| V2 | Input quality unacceptable | DEFER |
+| V3 | Unapproved model version (model drift) | DEFER |
+| V4 | AI flags escalation with abnormal classification | DEFER |
+| V5 | Missing accession number (traceability failure) | DEFER |
+| V6 | AI proposes out-of-contract workflow | DEFER |
+| V7 | Missing required AI evidence (fail-closed) | DEFER |
+| V8 | Replay verification (deterministic reproducibility) | ASSERT |
+| V9 | Unauthorized modality (mutation sensitivity) | DEFER |
+
+V8 additionally replays the evaluation to prove deterministic reproducibility.
+
+## AI Governance (E2-AI)
+
+The E2-AI boundary (`B_IMAGING_AI_DRAFT_AUTHORITY`) governs whether an AI
+screening system's output may advance to a radiologist's review queue. The AI
+itself has no governance authority — it proposes, and VB-OS verifies.
+
+Evidence separation is enforced: the AI supplies its claims (classification,
+recommended workflow, escalation flag), while the deployment supplies
+independently sourced governance facts (model version approval, modality
+authorization, preprocessing quality).
 
 | Predicate | Rule |
 |-----------|------|
-| `modality_in_release_scope` | modality is one of CT, MR, CR, DX |
-| `study_has_series` | the study contains at least one series |
-| `study_has_instances` | the study contains at least one instance |
-| `study_is_orderable` | the study carries a real accession number |
-
-There is deliberately **no** instance-completeness predicate. The PACS exposes
-no independently declared instance count to reconcile against — QIDO's
-`NumberOfStudyRelatedInstances` is computed from what the archive holds — so
-truncation is not detectable from DICOM evidence alone, and nothing was invented
-to pretend otherwise.
+| `classification_is_governed` | AI classification is in the authorized set |
+| `workflow_is_governed` | Recommended workflow is in the authorized set |
+| `no_escalation_flagged` | AI has not flagged the study for escalation |
+| `model_is_approved` | Deployed model version matches the approved version |
+| `modality_is_authorized` | Study modality is authorized for AI processing |
+| `quality_is_acceptable` | Input preprocessing quality meets the threshold |
+| `study_is_traceable` | Study has both a UID and an accession number |
 
 ## Studies
 
@@ -98,92 +117,33 @@ anonymized clinical studies.
 
 | Study | Modality | Accession | E1 |
 |-------|----------|-----------|----|
-| PHENIX (CT head/sinus) | CT | `A10011234814` | **ASSERT** |
-| BRAINIX (MR brain) | MR | `0` | **DEFER** — no accession, cannot be tied to an order |
+| PHENIX (CT head/sinus) | CT | `A10011234814` | ASSERT |
+| BRAINIX (MR brain) | MR | `0` | DEFER |
 
-BRAINIX's accession number is `"0"` in the source data. The DEFER comes from the
-data, not from anything edited.
+BRAINIX's accession number is `"0"` in the source data. The DEFER comes from
+the data, not from anything edited.
 
-## Certification
-
-One frozen conformance vector per boundary, executed on every bootstrap run and
-required to pass. This needs the **`manage_certifications`** API key scope —
-without it, version creation is refused and no run is ever produced.
-
-| Model | Boundary |
-|-------|----------|
-| Accessium Study Admissibility Certification | E1 |
-| Accessium Release Authorization Certification | E2 |
-| Accessium Delivery Execution Certification | E3 |
-
-## Prerequisites
-
-1. VB-OS Cloud API running on `localhost:8000`
-2. Docker
-3. Python 3.11+
-4. A VB-OS project, environment and API key (see `.env.example`). The key needs
-   `manage_certifications` alongside the boundary, connector, flow and evaluate
-   scopes.
-
-## Setup
-
-```bash
-# 1. Start the reference PACS (joins the VB-OS Cloud Docker network)
-docker compose up -d
-
-# 2. Load the anonymized studies and the RIS resources
-python seed_studies.py
-python seed_fhir.py
-
-# 3. Configure
-cp .env.example .env      # fill in VBOS_API_KEY, VBOS_PROJECT_ID, VBOS_ENVIRONMENT_ID
-
-# 4. Provision boundaries, connectors and flows in VB-OS Cloud (idempotent)
-python bootstrap.py
-
-# 5. Start the referring physician portal (reads .env)
-python delivery_gateway.py
-```
-
-Set `DELIVERY_DRIFT=23` to make the portal accept fewer instances than were
-authorized, which is what E3 exists to catch.
-
-Orthanc is at `http://localhost:8042` (user `vbos`) and HAPI FHIR at
-`http://localhost:8090/fhir`. From the platform's containers they are
-`http://accessium-orthanc:8042/dicom-web` and `http://accessium-fhir:8080/fhir`.
-
-## Per-study scoping
-
-Each connector is pinned to one study via `study_instance_uid` in its config, so
-the evaluated subject is what was requested rather than whatever the archive
-returned first. A scoped acquisition must resolve to exactly one study — zero or
-several are rejected with no evidence and no evaluation, and the rejection is
-recorded in the audit trail.
-
-| Connector | Scoped to | Stage | Decision |
-|-----------|-----------|-------|----------|
-| `accessium-pacs` | PHENIX study | E1 | ASSERT |
-| `accessium-pacs-unaccessioned` | BRAINIX study | E1 | DEFER |
-| `accessium-ris-report` | final report | E2 | ASSERT |
-| `accessium-ris-report-preliminary` | preliminary report | E2 | DEFER |
-| `accessium-ris-report-restricted` | restricted report | E2 | DEFER (prohibition) |
-
-A FHIR connector is scoped by direct read — `resource_type` holds a relative
-resource reference such as `DiagnosticReport/accessium-report-phenix`, which
-returns exactly one resource. A bare resource type returns a Bundle whose first
-entry is decided by server ordering.
-
-## Directory structure
+## Directory Structure
 
 ```
-accessium-dicom/
-├── docker-compose.yml   # Orthanc, joined to the VB-OS Cloud network
-├── orthanc.json         # PACS config: basic auth, DICOMweb
-├── seed_studies.py      # loads the anonymized studies
-├── seed_fhir.py         # loads the order and report resources
-├── bootstrap.py         # idempotent VB-OS provisioning (boundaries, connectors, flows)
-├── delivery_gateway.py  # referring physician portal — the governed downstream
-├── boundaries/          # DSL source of truth
-├── tests/
-└── manifest.json
+vb-os-reference-dicom/
+├── SETUP.md               # Complete setup guide
+├── demo.py                # Scenario runner (--scenario N, --all, --pipeline)
+├── verify.py              # Deterministic E2-AI verification vectors
+├── bootstrap.py           # (Optional) Standalone VB-OS provisioning
+├── seed_studies.py        # Loads anonymized DICOM studies into Orthanc
+├── seed_fhir.py           # Creates patient, order, and reports in HAPI FHIR
+├── docker-compose.yml     # Local Orthanc PACS + HAPI FHIR server
+├── orthanc.json           # PACS configuration
+├── .env.example           # Environment variable template
+└── boundaries/            # VB-OS DSL boundary definitions
+    ├── B_IMAGING_STUDY_ADMISSIBILITY.dsl
+    ├── B_IMAGING_AI_DRAFT_AUTHORITY.dsl
+    ├── B_IMAGING_RELEASE_AUTHORIZATION.dsl
+    └── B_IMAGING_DELIVERY_EXECUTION.dsl
 ```
+
+## License
+
+Copyright 2026 MNC Labs, Inc. Licensed under the Apache License, Version 2.0.
+See [LICENSE](LICENSE) for the full text.

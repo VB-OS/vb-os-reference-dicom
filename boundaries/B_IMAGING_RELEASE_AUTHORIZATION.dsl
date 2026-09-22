@@ -1,6 +1,8 @@
-boundary_id: B_ACCESSIUM_RELEASE_AUTHORIZATION
+# Copyright 2026 MNC Labs, Inc. Licensed under Apache 2.0.
+
+boundary_id: B_IMAGING_RELEASE_AUTHORIZATION
 version: 1
-scope: "accessium/imaging-release"
+scope: "imaging/release"
 eta_cap: 900
 
 define_set attesting_report_states: ("final", "amended")

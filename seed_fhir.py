@@ -1,3 +1,18 @@
+# Copyright 2026 MNC Labs, Inc.
+# Author: Asaad Riaz
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Seed the reference RIS with the release-authorization context for each study.
 
 Resources are written with fixed ids so the script is idempotent. Each imaging
@@ -15,7 +30,7 @@ import urllib.request
 
 FHIR_BASE = os.environ.get("FHIR_URL", "http://localhost:8090/fhir")
 
-ACCESSION_SYSTEM = "http://accessium.example.org/accession"
+ACCESSION_SYSTEM = "http://imaging.example.org/accession"
 
 PHENIX_ACCESSION = "A10011234814"
 
@@ -30,7 +45,7 @@ def _report(rid: str, accession: str, status: str, order: str, restricted: bool 
                 {"system": "http://loinc.org", "code": "24627-2", "display": "CT Head"}
             ]
         },
-        "subject": {"reference": "Patient/accessium-pt-phenix"},
+        "subject": {"reference": "Patient/imaging-pt-phenix"},
         "basedOn": [{"reference": f"ServiceRequest/{order}"}],
     }
     if restricted:
@@ -50,21 +65,21 @@ def _report(rid: str, accession: str, status: str, order: str, restricted: bool 
 
 RESOURCES = [
     (
-        "Patient/accessium-pt-phenix",
+        "Patient/imaging-pt-phenix",
         {
             "resourceType": "Patient",
-            "id": "accessium-pt-phenix",
+            "id": "imaging-pt-phenix",
             "identifier": [
-                {"system": "http://accessium.example.org/mrn", "value": "MRN-0001"}
+                {"system": "http://imaging.example.org/mrn", "value": "MRN-0001"}
             ],
             "name": [{"family": "PHENIX", "given": ["Reference"]}],
         },
     ),
     (
-        "ServiceRequest/accessium-order-phenix",
+        "ServiceRequest/imaging-order-phenix",
         {
             "resourceType": "ServiceRequest",
-            "id": "accessium-order-phenix",
+            "id": "imaging-order-phenix",
             "identifier": [{"system": ACCESSION_SYSTEM, "value": PHENIX_ACCESSION}],
             "status": "active",
             "intent": "order",
@@ -77,29 +92,29 @@ RESOURCES = [
                     }
                 ]
             },
-            "subject": {"reference": "Patient/accessium-pt-phenix"},
+            "subject": {"reference": "Patient/imaging-pt-phenix"},
         },
     ),
     (
-        "DiagnosticReport/accessium-report-phenix",
-        _report("accessium-report-phenix", PHENIX_ACCESSION, "final", "accessium-order-phenix"),
+        "DiagnosticReport/imaging-report-phenix",
+        _report("imaging-report-phenix", PHENIX_ACCESSION, "final", "imaging-order-phenix"),
     ),
     (
-        "DiagnosticReport/accessium-report-preliminary",
+        "DiagnosticReport/imaging-report-preliminary",
         _report(
-            "accessium-report-preliminary",
+            "imaging-report-preliminary",
             PHENIX_ACCESSION,
             "preliminary",
-            "accessium-order-phenix",
+            "imaging-order-phenix",
         ),
     ),
     (
-        "DiagnosticReport/accessium-report-restricted",
+        "DiagnosticReport/imaging-report-restricted",
         _report(
-            "accessium-report-restricted",
+            "imaging-report-restricted",
             PHENIX_ACCESSION,
             "final",
-            "accessium-order-phenix",
+            "imaging-order-phenix",
             restricted=True,
         ),
     ),

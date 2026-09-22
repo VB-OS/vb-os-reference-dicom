@@ -1,4 +1,19 @@
-"""Idempotent VB-OS Cloud provisioning for the Accessium DICOM reference environment.
+# Copyright 2026 MNC Labs, Inc.
+# Author: Asaad Riaz
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Idempotent VB-OS Cloud provisioning for the DICOM reference environment.
 
 Creates and deploys the boundaries, then registers one connector per governed
 subject. Safe to re-run.
@@ -26,52 +41,48 @@ API_KEY = os.environ["VBOS_API_KEY"]
 PROJECT_ID = os.environ["VBOS_PROJECT_ID"]
 ENV_ID = os.environ["VBOS_ENVIRONMENT_ID"]
 
-ORTHANC_BASE_URL = os.environ.get("ORTHANC_DICOMWEB_URL", "http://accessium-orthanc:8042/dicom-web")
-ORTHANC_USER = os.environ.get("ORTHANC_USER", "vbos")
-ORTHANC_PASSWORD = os.environ.get("ORTHANC_PASSWORD", "accessium_dev")
-FHIR_BASE_URL = os.environ.get("FHIR_INTERNAL_URL", "http://accessium-fhir:8080/fhir")
 
 ROOT = Path(__file__).parent
 STATE_FILE = ROOT / ".bootstrap-state.json"
 
-E1 = "B_ACCESSIUM_STUDY_ADMISSIBILITY"
-E2 = "B_ACCESSIUM_RELEASE_AUTHORIZATION"
-E3 = "B_ACCESSIUM_DELIVERY_EXECUTION"
+E1 = "B_IMAGING_STUDY_ADMISSIBILITY"
+E2_AI = "B_IMAGING_AI_DRAFT_AUTHORITY"
+E2 = "B_IMAGING_RELEASE_AUTHORIZATION"
+E3 = "B_IMAGING_DELIVERY_EXECUTION"
 
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://host.docker.internal:9092")
-WEBHOOK_SIGNING_SECRET = os.environ.get(
-    "WEBHOOK_SIGNING_SECRET", "accessium_webhook_secret_dev"
-)
-INGEST_SIGNING_SECRET = os.environ.get(
-    "INGEST_SIGNING_SECRET", "accessium_ingest_secret_dev"
-)
 
 BOUNDARIES = [
     (
         E1,
-        "Accessium Study Admissibility",
+        "Imaging Study Admissibility",
         "E1 — is this radiology study identifiable, in release scope, non-empty, "
         "and tied to an imaging order?",
     ),
     (
+        E2_AI,
+        "Imaging AI Draft Authority",
+        "E2-AI — may this AI-produced screening result advance to the radiologist "
+        "as a draft for review?",
+    ),
+    (
         E2,
-        "Accessium Release Authorization",
+        "Imaging Release Authorization",
         "E2 — is the report authorising this release finalised, tied to the study's "
         "accession, linked to an order, and free of an export restriction?",
     ),
     (
         E3,
-        "Accessium Delivery Execution",
+        "Imaging Delivery Execution",
         "E3 — did the receiving portal complete the delivery, to the named "
         "recipient, of exactly what was authorized?",
     ),
 ]
 
 PHENIX_UID = os.environ.get(
-    "ACCESSIUM_PHENIX_UID", "2.16.840.1.113669.632.20.1211.10000098591"
+    "IMAGING_PHENIX_UID", "2.16.840.1.113669.632.20.1211.10000098591"
 )
 BRAINIX_UID = os.environ.get(
-    "ACCESSIUM_BRAINIX_UID", "2.16.840.1.113669.632.20.1211.10000357775"
+    "IMAGING_BRAINIX_UID", "2.16.840.1.113669.632.20.1211.10000357775"
 )
 
 DICOM_MAPPINGS = [
@@ -99,6 +110,14 @@ RECEIPT_MAPPINGS = [
     },
 ]
 
+AI_SCREENING_MAPPINGS = [
+    {"evidence_field": "ai_classification", "source_path": "parsed_content.classification"},
+    {"evidence_field": "ai_recommended_workflow", "source_path": "parsed_content.recommended_workflow"},
+    {"evidence_field": "ai_summary", "source_path": "parsed_content.summary"},
+    {"evidence_field": "ai_requires_escalation", "source_path": "parsed_content.requires_escalation", "transform": "to_integer"},
+    {"evidence_field": "model_used", "source_path": "model"},
+]
+
 FHIR_MAPPINGS = [
     {"evidence_field": "report_state", "source_path": "status"},
     {"evidence_field": "report_accession", "source_path": "identifier.0.value"},
@@ -118,9 +137,10 @@ def _dicom(name: str, study_uid: str) -> dict:
         "name": name,
         "provider": "dicom",
         "boundary_ref": E1,
-        "config": {"base_url": ORTHANC_BASE_URL, "study_instance_uid": study_uid},
-        "credentials": {"username": ORTHANC_USER, "password": ORTHANC_PASSWORD},
+        "config": {"study_instance_uid": study_uid},
+        "credentials": {},
         "evidence_mappings": DICOM_MAPPINGS,
+        "allowed_acquisition_classes": ["caller_supplied_payload"],
     }
 
 
@@ -129,18 +149,10 @@ def _fhir(name: str, report_id: str) -> dict:
         "name": name,
         "provider": "hl7_fhir",
         "boundary_ref": E2,
-        # A relative resource reference performs a direct read, returning exactly
-        # one resource. A bare resource type returns a Bundle whose first entry
-        # is decided by server ordering.
-        "config": {
-            "base_url": FHIR_BASE_URL,
-            "resource_type": f"DiagnosticReport/{report_id}",
-        },
-        # HAPI needs no auth; auth_type "bearer" with an empty token adds no
-        # header. The key must still be present — an empty credential blob
-        # cannot be decrypted on gather.
-        "credentials": {"access_token": ""},
+        "config": {"resource_type": f"DiagnosticReport/{report_id}"},
+        "credentials": {},
         "evidence_mappings": FHIR_MAPPINGS,
+        "allowed_acquisition_classes": ["caller_supplied_payload"],
     }
 
 
@@ -148,23 +160,36 @@ def _fhir(name: str, report_id: str) -> dict:
 # the platform, so the acquisition is an authenticated provider push rather than
 # anything the platform went and fetched.
 RECEIPT_CONNECTOR = {
-    "name": "accessium-portal-receipt",
+    "name": "imaging-portal-receipt",
     "provider": "hl7_fhir",
     "boundary_ref": E3,
-    "config": {"base_url": FHIR_BASE_URL, "resource_type": "Task"},
-    "credentials": {"access_token": ""},
+    "config": {"resource_type": "Task"},
+    "credentials": {},
     "evidence_mappings": RECEIPT_MAPPINGS,
-    "webhook_secret": INGEST_SIGNING_SECRET,
-    "allowed_acquisition_classes": ["authenticated_provider_push"],
+    "allowed_acquisition_classes": ["caller_supplied_payload"],
+}
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+INFERENCE_MODEL_ID = os.environ.get("INFERENCE_MODEL_ID", "gpt-4o-2024-08-06")
+
+AI_SCREENING_CONNECTOR = {
+    "name": "imaging-ai-screening",
+    "provider": "openai",
+    "boundary_ref": E2_AI,
+    "config": {"model": INFERENCE_MODEL_ID},
+    "credentials": {"api_key": OPENAI_API_KEY},
+    "evidence_mappings": AI_SCREENING_MAPPINGS,
+    "allowed_acquisition_classes": ["active_provider"],
 }
 
 CONNECTORS = [
-    _dicom("accessium-pacs", PHENIX_UID),
-    _dicom("accessium-pacs-unaccessioned", BRAINIX_UID),
-    _fhir("accessium-ris-report", "accessium-report-phenix"),
-    _fhir("accessium-ris-report-preliminary", "accessium-report-preliminary"),
-    _fhir("accessium-ris-report-restricted", "accessium-report-restricted"),
+    _dicom("imaging-pacs", PHENIX_UID),
+    _dicom("imaging-pacs-unaccessioned", BRAINIX_UID),
+    _fhir("imaging-ris-report", "imaging-report-phenix"),
+    _fhir("imaging-ris-report-preliminary", "imaging-report-preliminary"),
+    _fhir("imaging-ris-report-restricted", "imaging-report-restricted"),
     RECEIPT_CONNECTOR,
+    AI_SCREENING_CONNECTOR,
 ]
 
 
@@ -268,7 +293,7 @@ def provision_boundary(ref: str, name: str, description: str, state: dict) -> No
             if dep and dep.get("status") == "PENDING_APPROVAL":
                 api("POST",
                     f"/v1/projects/{PROJECT_ID}/environments/{ENV_ID}/deployments/{dep['id']}/approve",
-                    {"comment": "Accessium reference bootstrap"})
+                    {"comment": "Imaging reference bootstrap"})
             print(f"  {ref}: deployed")
 
     state.setdefault("boundaries", {})[ref] = {
@@ -288,10 +313,15 @@ def provision_connectors(state: dict) -> None:
 
         if existing:
             connector_id = existing["id"]
+            patch: dict = {}
             if existing.get("config") != config:
-                api("PATCH", f"/v1/projects/{PROJECT_ID}/connectors/{connector_id}",
-                    {"config": config})
-                print(f"  {name}: scope updated")
+                patch["config"] = config
+            creds = spec.get("credentials", {})
+            if any(v for v in creds.values()):
+                patch["credentials"] = creds
+            if patch:
+                api("PATCH", f"/v1/projects/{PROJECT_ID}/connectors/{connector_id}", patch)
+                print(f"  {name}: updated ({', '.join(patch.keys())})")
             else:
                 print(f"  {name}: exists")
         else:
@@ -305,8 +335,6 @@ def provision_connectors(state: dict) -> None:
                 ),
                 "evidence_mappings": spec["evidence_mappings"],
             }
-            if spec.get("webhook_secret"):
-                body["webhook_secret"] = spec["webhook_secret"]
             created = api("POST", f"/v1/projects/{PROJECT_ID}/connectors", body)
             if created is None:
                 sys.exit(f"connector creation failed: {name}")
@@ -325,7 +353,7 @@ def provision_connectors(state: dict) -> None:
 
 CERTIFICATIONS = [
     (
-        "Accessium Study Admissibility Certification",
+        "Imaging Study Admissibility Certification",
         E1,
         [
             {"field": "study_instance_uid", "type": "string"},
@@ -343,7 +371,7 @@ CERTIFICATIONS = [
         },
     ),
     (
-        "Accessium Release Authorization Certification",
+        "Imaging Release Authorization Certification",
         E2,
         [
             {"field": "report_state", "type": "string"},
@@ -354,12 +382,12 @@ CERTIFICATIONS = [
         {
             "report_state": "final",
             "report_accession": "A10011234814",
-            "order_reference": "ServiceRequest/accessium-order-phenix",
-            "subject_reference": "Patient/accessium-pt-phenix",
+            "order_reference": "ServiceRequest/imaging-order-phenix",
+            "subject_reference": "Patient/imaging-pt-phenix",
         },
     ),
     (
-        "Accessium Delivery Execution Certification",
+        "Imaging Delivery Execution Certification",
         E3,
         [
             {"field": "delivery_state", "type": "string"},
@@ -438,17 +466,97 @@ def provision_certifications(state: dict) -> None:
 
 
 def provision_flows(state: dict) -> None:
-    """Two flows: E2 ASSERT dispatches the release; E3 records the outcome."""
+    """Four flows: E1 intake, E2-AI draft authority, E2 release, E3 execution."""
     boundaries = state["boundaries"]
     connector_ids = state["connector_ids"]
 
-    live = {
+    intake = {
         "schema_version": 1,
         "nodes": [
             {
                 "id": "trigger-1",
                 "type": "trigger",
-                "config": {"connector_id": connector_ids["accessium-ris-report"]},
+                "config": {"connector_id": connector_ids["imaging-pacs"]},
+            },
+            {
+                "id": "boundary-1",
+                "type": "boundary",
+                "config": {
+                    "boundary_ref": E1,
+                    "boundary_version_id": boundaries[E1]["version_id"],
+                },
+            },
+            {
+                "id": "intake-log",
+                "type": "assert_action",
+                "config": {
+                    "action_type": "log",
+                    "message": "Study admitted — ready for AI screening",
+                },
+            },
+            {
+                "id": "intake-ntf",
+                "type": "defer_action",
+                "config": {
+                    "action_type": "notification",
+                    "title": "Manual intake review required",
+                },
+            },
+        ],
+        "edges": [
+            {"id": "e1", "source": "trigger-1", "target": "boundary-1"},
+            {"id": "e2", "source": "boundary-1", "target": "intake-log", "label": "assert"},
+            {"id": "e3", "source": "boundary-1", "target": "intake-ntf", "label": "defer"},
+        ],
+    }
+
+    ai_draft = {
+        "schema_version": 1,
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "trigger",
+                "config": {"connector_id": connector_ids["imaging-ai-screening"]},
+            },
+            {
+                "id": "boundary-1",
+                "type": "boundary",
+                "config": {
+                    "boundary_ref": E2_AI,
+                    "boundary_version_id": boundaries[E2_AI]["version_id"],
+                },
+            },
+            {
+                "id": "draft-log",
+                "type": "assert_action",
+                "config": {
+                    "action_type": "log",
+                    "message": "AI draft advancement authorized for radiologist review",
+                },
+            },
+            {
+                "id": "standard-ntf",
+                "type": "defer_action",
+                "config": {
+                    "action_type": "notification",
+                    "title": "AI output not authorized — route to standard manual review",
+                },
+            },
+        ],
+        "edges": [
+            {"id": "e1", "source": "trigger-1", "target": "boundary-1"},
+            {"id": "e2", "source": "boundary-1", "target": "draft-log", "label": "assert"},
+            {"id": "e3", "source": "boundary-1", "target": "standard-ntf", "label": "defer"},
+        ],
+    }
+
+    release = {
+        "schema_version": 1,
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "trigger",
+                "config": {"connector_id": connector_ids["imaging-ris-report"]},
             },
             {
                 "id": "boundary-1",
@@ -456,23 +564,6 @@ def provision_flows(state: dict) -> None:
                 "config": {
                     "boundary_ref": E2,
                     "boundary_version_id": boundaries[E2]["version_id"],
-                },
-            },
-            {
-                "id": "release-wh",
-                "type": "assert_action",
-                "config": {
-                    "action_type": "webhook",
-                    "url": f"{GATEWAY_URL}/release-study",
-                    "signing_secret": WEBHOOK_SIGNING_SECRET,
-                    "max_attempts": 3,
-                    "backoff_seconds": 5,
-                    # Minimum disclosure: the portal receives only what it needs
-                    # to perform and account for the delivery.
-                    "evidence_disclosure_projection": [
-                        "report_accession",
-                        "authorized_instance_count",
-                    ],
                 },
             },
             {
@@ -491,9 +582,8 @@ def provision_flows(state: dict) -> None:
         ],
         "edges": [
             {"id": "e1", "source": "trigger-1", "target": "boundary-1"},
-            {"id": "e2", "source": "boundary-1", "target": "release-wh", "label": "assert"},
-            {"id": "e3", "source": "boundary-1", "target": "release-log", "label": "assert"},
-            {"id": "e4", "source": "boundary-1", "target": "review-ntf", "label": "defer"},
+            {"id": "e2", "source": "boundary-1", "target": "release-log", "label": "assert"},
+            {"id": "e3", "source": "boundary-1", "target": "review-ntf", "label": "defer"},
         ],
     }
 
@@ -503,7 +593,7 @@ def provision_flows(state: dict) -> None:
             {
                 "id": "trigger-1",
                 "type": "trigger",
-                "config": {"connector_id": connector_ids["accessium-portal-receipt"]},
+                "config": {"connector_id": connector_ids["imaging-portal-receipt"]},
             },
             {
                 "id": "boundary-1",
@@ -535,10 +625,16 @@ def provision_flows(state: dict) -> None:
     }
 
     flows = [
-        ("Accessium Release Authorization Dispatch",
-         "Fires on E2. ASSERT dispatches a signed release to the referring portal.",
-         live),
-        ("Accessium Delivery Execution Result",
+        ("Imaging Study Intake Governance",
+         "Fires on E1. ASSERT logs study admission; application orchestrates E2-AI.",
+         intake),
+        ("Imaging AI Draft Authority",
+         "Fires on E2-AI. ASSERT logs AI draft advancement authorization.",
+         ai_draft),
+        ("Imaging Release Authorization Dispatch",
+         "Fires on E2. ASSERT logs release authorization for application orchestration.",
+         release),
+        ("Imaging Delivery Execution Result",
          "Fires on E3 from the portal receipt. ASSERT = verified, DEFER = anomaly.",
          execution),
     ]
@@ -559,9 +655,17 @@ def provision_flows(state: dict) -> None:
             flow_id = created["id"]
             print(f"  {name}: created")
 
-        if rows(api("GET", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions")):
-            flow_ids[name] = flow_id
-            continue
+        versions = rows(api("GET", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions"))
+        if versions:
+            latest = versions[0]
+            detail = api("GET",
+                         f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions/{latest['id']}")
+            existing_def = (detail or {}).get("definition", {})
+            if json.dumps(existing_def, sort_keys=True) == json.dumps(definition, sort_keys=True):
+                flow_ids[name] = flow_id
+                print(f"    version up to date")
+                continue
+            print(f"    definition changed — creating new version")
 
         version = api("POST", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions",
                       {"definition": definition})
@@ -569,7 +673,6 @@ def provision_flows(state: dict) -> None:
             sys.exit(f"flow version failed: {name}")
         vid = version["id"]
         api("POST", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions/{vid}/approve", {})
-        # A flow is created DRAFT and cannot deploy a version until activated.
         api("PATCH", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}", {"status": "ACTIVE"})
         deployed = api("POST", f"/v1/projects/{PROJECT_ID}/flows/{flow_id}/versions/{vid}/deploy",
                        {"environment_id": ENV_ID})

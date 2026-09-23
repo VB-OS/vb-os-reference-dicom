@@ -22,13 +22,13 @@ boundaries evaluated by VB-OS Cloud against real source systems.
 
 ### 1.1 Log in to the VB-OS Console
 
-Open https://console.vb-os.org and sign in.
+Open https://vbos.cloud and sign in.
 
 ### 1.2 Fork the DICOM Imaging Governance template
 
-1. Navigate to the **Template Catalog**.
+1. In the sidebar, click **Registry**.
 2. Find **"DICOM Imaging Governance"**.
-3. Click **Fork** and give the project a name (e.g. "DICOM Evaluation").
+3. Click **Fork Template** and give the project a name (e.g. "DICOM Evaluation").
 
 This creates a fully provisioned project with:
 - 4 boundaries (E1, E2-AI, E2, E3) — approved and deployed
@@ -38,9 +38,12 @@ This creates a fully provisioned project with:
 
 ### 1.3 Copy the Project ID and Environment ID
 
-Inside the new project, go to **Settings**. Copy:
-- **Project ID** (UUID)
-- **Environment ID** — the "Development" environment created by the fork
+Inside the new project:
+
+1. Go to **Settings** (in the project sub-navigation). Under the **General**
+   tab, copy the **Project ID**.
+2. Switch to the **Environments** tab. Copy the **Environment ID** for the
+   "Development" environment created by the fork.
 
 You will need both in your `.env` file.
 
@@ -53,7 +56,8 @@ push data to VB-OS Cloud), so they need no configuration. The seventh —
 VB-OS Cloud calls OpenAI server-side on your behalf. This connector needs
 your OpenAI API key and model configuration.
 
-1. Inside the project, go to **Integration Hub → Connectors**.
+1. Inside the project, go to **Integrate** (in the project sub-navigation)
+   and select the **Connectors** tab.
 2. Click on **"Imaging AI Screening"** to open the edit form.
 3. Fill in the following fields:
 
@@ -81,7 +85,8 @@ your OpenAI API key and model configuration.
 
 ### 1.5 Create an API key
 
-Inside the project: **Settings → API Keys → Create New Key**.
+Inside the project, go to **Integrate** and select the **API Keys** tab.
+Select the environment from the dropdown, then click **Create Key**.
 
 **Select all scopes.** This is a reference integration that exercises the
 full platform surface — boundaries, connectors, flows, evaluations,
@@ -94,7 +99,7 @@ certifications, and replay. Copy the key immediately; it is shown only once.
 ### 2.1 Clone and enter the repository
 
 ```bash
-git clone <repository-url> vb-os-reference-dicom
+git clone https://github.com/VB-OS/vb-os-reference-dicom.git
 cd vb-os-reference-dicom
 ```
 
@@ -378,8 +383,8 @@ every run.
 ## Troubleshooting
 
 **demo.py fails with "HTTP 401"**
-Your API key is invalid or expired. Create a new one in the console
-(step 1.5).
+Your API key is invalid or expired. Create a new one under **Integrate >
+API Keys** (step 1.5).
 
 **demo.py fails with "HTTP 403"**
 The API key is missing required scopes. Delete it and create a new one with
@@ -387,14 +392,14 @@ all scopes selected.
 
 **demo.py scenario 6 or --pipeline fails at E2-AI**
 Check that the OpenAI API key is configured on the **Imaging AI Screening**
-connector in the console (step 1.4). VB-OS Cloud calls OpenAI server-side
-using those credentials. Also verify `OPENAI_API_KEY` is set in your `.env`
-(used by `bootstrap.py` if you run it separately).
+connector (step 1.4). VB-OS Cloud calls OpenAI server-side using those
+credentials. Also verify `OPENAI_API_KEY` is set in your `.env` (used by
+`bootstrap.py` if you run it separately).
 
 **"Connector 'Imaging AI Screening' not found"**
 The template fork should have created all 7 connectors. Check your project
-in the console under **Integration Hub → Connectors**. If connectors are
-missing, re-fork the template.
+under **Integrate > Connectors**. If connectors are missing, re-fork the
+template.
 
 **seed_studies.py is slow**
 It downloads real DICOM studies (~100 MB) from the Orthanc public archive.

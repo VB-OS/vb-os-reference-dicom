@@ -165,7 +165,7 @@ Both should return JSON responses.
 ### 2.5 Seed the DICOM studies
 
 ```bash
-source .env
+set -a; source .env; set +a
 python3 seed_studies.py
 ```
 
@@ -211,10 +211,10 @@ At this point, everything is ready:
 
 ## Part 3: Run the Integration
 
-All commands below require the environment to be loaded:
+All commands below require the environment to be exported:
 
 ```bash
-source .env
+set -a; source .env; set +a
 ```
 
 ### 3.1 List available scenarios

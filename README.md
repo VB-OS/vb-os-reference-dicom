@@ -15,6 +15,20 @@ can it be proven six months from now.
 See [SETUP.md](SETUP.md) for complete setup instructions — from forking the
 template in VB-OS Cloud to running the full integration locally.
 
+### Docker (recommended)
+
+After completing VB-OS Cloud setup (SETUP.md Part 1) and creating your `.env`:
+
+```bash
+docker compose --profile app build
+docker compose up -d
+docker compose --profile app run --rm imaging-app seed_studies.py
+docker compose --profile app run --rm imaging-app seed_fhir.py
+docker compose --profile app run --rm imaging-app demo.py --pipeline
+```
+
+No local Python installation required. See SETUP.md Part 5 for details.
+
 ## Architecture
 
 ```
@@ -128,14 +142,18 @@ the data, not from anything edited.
 ```
 vb-os-reference-dicom/
 ├── SETUP.md               # Complete setup guide
+├── Dockerfile             # Container image for the integration scripts
+├── docker-compose.yml     # Orthanc PACS + HAPI FHIR + app container
+├── requirements.txt       # Pinned Python dependencies
 ├── demo.py                # Scenario runner (--scenario N, --all, --pipeline)
 ├── verify.py              # Deterministic E2-AI verification vectors
 ├── bootstrap.py           # (Optional) Standalone VB-OS provisioning
 ├── seed_studies.py        # Loads anonymized DICOM studies into Orthanc
 ├── seed_fhir.py           # Creates patient, order, and reports in HAPI FHIR
-├── docker-compose.yml     # Local Orthanc PACS + HAPI FHIR server
 ├── orthanc.json           # PACS configuration
 ├── .env.example           # Environment variable template
+├── vendor/                # Vendored VB-OS Python SDK (not yet on PyPI)
+│   └── vb_os-0.1.0.tar.gz
 └── boundaries/            # VB-OS DSL boundary definitions
     ├── B_IMAGING_STUDY_ADMISSIBILITY.dsl
     ├── B_IMAGING_AI_DRAFT_AUTHORITY.dsl

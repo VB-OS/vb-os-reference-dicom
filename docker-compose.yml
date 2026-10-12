@@ -11,6 +11,12 @@ services:
     volumes:
       - ./orthanc.json:/etc/orthanc/orthanc.json:ro
       - orthanc-storage:/var/lib/orthanc/db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-u", "vbos:imaging_dev", "http://localhost:8042/system"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   imaging-fhir:
     image: hapiproject/hapi:latest
@@ -21,6 +27,27 @@ services:
     environment:
       hapi.fhir.fhir_version: R4
       hapi.fhir.allow_external_references: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/fhir/metadata"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  imaging-app:
+    build: .
+    container_name: imaging-app
+    env_file: .env
+    environment:
+      ORTHANC_URL: http://imaging-orthanc:8042
+      FHIR_URL: http://imaging-fhir:8080/fhir
+    depends_on:
+      imaging-orthanc:
+        condition: service_healthy
+      imaging-fhir:
+        condition: service_healthy
+    profiles:
+      - app
 
 volumes:
   orthanc-storage:

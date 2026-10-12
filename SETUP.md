@@ -318,6 +318,77 @@ export DELIVERY_DRIFT=0
 
 ---
 
+## Part 4.5: Verify Results on the Platform
+
+After running the demo scenarios, open the VB-OS Console at
+https://vbos.cloud to see what the platform recorded. Sign in and
+navigate to the project you created in Part 1.
+
+### Overview
+
+The project landing page shows a summary of recent activity: total
+evaluations, ASSERT/DEFER split, and boundary health. After running
+`--all`, you should see evaluations for all four boundaries
+(E1, E2, E2-AI, E3 if you ran `--pipeline`).
+
+### Monitor
+
+Click **Monitor** in the project sub-navigation. This is the live
+evaluation feed. Each row shows:
+
+- **Decision** -- ASSERT (green) or DEFER (amber)
+- **Boundary** -- which boundary was evaluated
+- **Timestamp** -- when the evaluation occurred
+- **Acquisition class** -- `caller_supplied_payload` for E1/E2/E3,
+  `active_provider` for E2-AI
+
+You should see entries for every scenario you ran. ASSERT results
+confirm the workload passed all predicates. DEFER results show which
+predicate failed or which prohibition was violated.
+
+### Evaluation Detail
+
+Click any evaluation row to open the detail view. This shows:
+
+- **Evidence** -- the exact evidence fields VB-OS extracted from the
+  raw payload (accession number, modality, report state, etc.)
+- **Predicate results** -- each named predicate and whether it passed
+  or failed
+- **Provenance** -- how the evidence was acquired (connector ID,
+  acquisition class, timestamp)
+- **Failure reasons** -- for DEFER results, the specific predicate
+  that failed or the prohibition that was violated
+
+### Replay
+
+From the evaluation detail view, click **Replay**. VB-OS re-evaluates
+the same input artifact against the same boundary snapshot and binary
+version. The replay result must match the original. This proves
+deterministic reproducibility: given the same artifact, boundary, and
+binary, the result is identical.
+
+The replay view shows:
+
+- **Original decision** and **Replay decision** -- these must match
+- **Identity match** -- confirms the same binary and boundary snapshot
+  were used
+- **Input hash** -- proves the input artifact has not been modified
+
+### What to Expect
+
+| Scenario | Boundary | Expected Decision | What to Look For |
+|----------|----------|-------------------|------------------|
+| 1 | E1 Study Admissibility | ASSERT | All 4 predicates pass, 723 instances, CT modality |
+| 2 | E1 Study Admissibility | DEFER | `study_is_orderable` fails (accession = "0") |
+| 3 | E2 Release Authorization | ASSERT | All 4 predicates pass, report state = final |
+| 4 | E2 Release Authorization | DEFER | `report_is_attested` fails (preliminary report) |
+| 5 | E2 Release Authorization | DEFER | `export_restriction` prohibition violated |
+| 6 | E2-AI Draft Authority | DEFER/ASSERT | AI classification determines outcome; DEFER if escalation flagged |
+| Pipeline E3 | E3 Delivery Execution | ASSERT | Delivered count matches authorized count |
+| Pipeline E3 (drift) | E3 Delivery Execution | DEFER | `DELIVERY_DRIFT=23` causes count mismatch |
+
+---
+
 ## What Each Script Does
 
 | Script | Purpose | Dependencies |

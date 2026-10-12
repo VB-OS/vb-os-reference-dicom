@@ -103,18 +103,19 @@ git clone https://github.com/VB-OS/vb-os-reference-dicom.git
 cd vb-os-reference-dicom
 ```
 
-### 2.2 Create a virtual environment and install the SDK
+### 2.2 Create a virtual environment and install dependencies
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install vb-os
+pip install -r requirements.txt
+pip install vendor/vb_os-0.1.0.tar.gz
 ```
 
-This creates an isolated Python environment and installs the official VB-OS
-Python SDK from PyPI. Only `demo.py` uses it — all other scripts
-(`bootstrap.py`, `verify.py`, `seed_studies.py`, `seed_fhir.py`) use the
-standard library only.
+This creates an isolated Python environment, installs pinned dependencies, and
+installs the VB-OS Python SDK from the vendored distribution. Only `demo.py`
+uses the SDK — all other scripts (`bootstrap.py`, `verify.py`,
+`seed_studies.py`, `seed_fhir.py`) use the standard library only.
 
 Every time you open a new terminal to run scripts, activate the environment
 first:
@@ -323,7 +324,7 @@ export DELIVERY_DRIFT=0
 |--------|---------|--------------|
 | `seed_studies.py` | Downloads real anonymized DICOM studies from the Orthanc public archive and uploads them to the local PACS | Standard library only |
 | `seed_fhir.py` | Creates the patient, order, and diagnostic reports in the local HAPI FHIR server | Standard library only |
-| `demo.py` | Runs individual scenarios and the full pipeline against real source systems | `vb-os` SDK (`pip install vb-os`) |
+| `demo.py` | Runs individual scenarios and the full pipeline against real source systems | `vb-os` SDK (vendored in `vendor/`) |
 | `verify.py` | Deterministic E2-AI verification vectors — no live AI calls | Standard library only |
 | `bootstrap.py` | (Optional) Standalone provisioning of boundaries, connectors, flows, and certifications — use if not forking the template | Standard library only |
 
@@ -377,6 +378,64 @@ The four boundary definitions live in `boundaries/` as VB-OS DSL source files:
 
 These are the source of truth. `bootstrap.py` syncs them to VB-OS Cloud on
 every run.
+
+---
+
+## Part 5: Running with Docker (Alternative)
+
+Instead of installing Python and the SDK locally, you can run all scripts
+inside a container. This requires only Docker Desktop and a configured `.env`
+file (Parts 1 and 2.3).
+
+### 5.1 Start source systems and build the app image
+
+```bash
+docker compose --profile app build
+docker compose up -d
+```
+
+The first command builds the integration container image. The second starts
+Orthanc and HAPI FHIR. Health checks ensure both are ready before any app
+commands run.
+
+### 5.2 Seed the source systems
+
+```bash
+docker compose --profile app run --rm imaging-app seed_studies.py
+docker compose --profile app run --rm imaging-app seed_fhir.py
+```
+
+### 5.3 Run scenarios
+
+```bash
+docker compose --profile app run --rm imaging-app demo.py --list
+docker compose --profile app run --rm imaging-app demo.py --scenario 1
+docker compose --profile app run --rm imaging-app demo.py --all
+```
+
+### 5.4 Run the full pipeline
+
+```bash
+docker compose --profile app run --rm imaging-app demo.py --pipeline
+```
+
+### 5.5 Run verification vectors
+
+```bash
+docker compose --profile app run --rm imaging-app verify.py
+```
+
+### 5.6 Simulate a delivery anomaly
+
+```bash
+docker compose --profile app run --rm -e DELIVERY_DRIFT=23 imaging-app demo.py --pipeline
+```
+
+### 5.7 Stop everything
+
+```bash
+docker compose --profile app down
+```
 
 ---
 
